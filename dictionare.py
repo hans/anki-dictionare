@@ -1,0 +1,1 @@
+import dictionare_support.addon
