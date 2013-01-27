@@ -2,16 +2,45 @@
 
 from anki.hooks import addHook
 from aqt import mw
-from aqt.utils import showInfo
+from aqt.utils import askUserDialog, showInfo
+from PyQt4.QtGui import QPushButton
 
 
 def editor_download_and_insert_noun_info(self):
     self.saveNow()
 
-    word = strip_accents(self.note['headword.singular'])
-    new_fields = flatten(extract_noun_info(download_noun_html(word)))
+    word = self.note['headword.singular']
+    word_stripped = strip_accents(word)
 
-    for field, val in new_fields.items():
+    html = download_noun_html(word_stripped)
+    main_noun_containers = do_preliminary_extraction(html)
+
+    noun_infos = [flatten(extract_noun_info(html, cont))
+                  for cont in main_noun_containers]
+
+    noun_result = None
+    if len(noun_infos) > 1:
+        # We got more than one result in the server response. Try to
+        # resolve on our own by comparing the result (including
+        # diacritics) with what the user input; if there's no definite
+        # match, then ask the user.
+        for noun_info in noun_infos:
+            if compare_romanian_words(noun_info['headword.singular'], word):
+                noun_result = noun_info
+                break
+
+        if noun_result is None:
+            keyed_results = {n['headword.singular']: n for n in noun_infos}
+            decision = ask_user_word(keyed_results.keys())
+
+            if decision is None:
+                return
+            else:
+                noun_result = keyed_results[decision]
+    else:
+        noun_result = noun_infos[0]
+
+    for field, val in noun_result.items():
         if field in self.note:
             self.note[field] = val
 
@@ -26,6 +55,38 @@ def editor_add_download_noun_icon(self):
 
 def editor_add_download_verb_icon(self):
     pass
+
+
+def ask_user_word(words):
+    """
+    Ask the user to choose between multiple word results.
+
+    Returns the word selected or `None` if the user cancels the action.
+    """
+
+    buttons = map(QPushButton, words + ['Cancel'])
+    dialog = askUserDialog('Multiple results were found. Which should be used?',
+                           buttons)
+    result = dialog.run()
+
+    if result == 'Cancel':
+        return None
+    return result
+
+
+def compare_romanian_words(s1, s2):
+    """
+    Some Romanian texts use cedillas and other use commas. Regularize
+    first and then compare.
+    """
+
+    replacements = {u'Ş': u'Ș', u'ş': u'ș', u'Ţ': u'Ț', u'ţ': u'ț'}
+
+    for search, replace in replacements.items():
+        s1 = s1.replace(search, replace)
+        s2 = s2.replace(search, replace)
+
+    return s1 == s2
 
 
 addHook("setupEditorButtons", editor_add_download_noun_icon)
@@ -90,7 +151,18 @@ def download_noun_html(word):
     return parsed
 
 
-def extract_noun_info(html):
+def do_preliminary_extraction(html):
+    """
+    Pull out a list of nouns displayed on the given page. This
+    function's return (element-by-element) should be passed to
+    `extract_noun_info`.
+    """
+
+    main_noun_containers = html.getItemList('html/body/center[3]/center[1]/table[1]/tbody[1]/tr[1]/td[1]/center/table[1]/tbody[1]')
+    return main_noun_containers
+
+
+def extract_noun_info(html, main_noun_container):
     """
     Build structured information about noun declensions from a
     Dictionare noun page.
@@ -114,8 +186,6 @@ def extract_noun_info(html):
             }
         }
     }
-
-    main_noun_container = html.getFirstItem('html/body/center[3]/center[1]/table[1]/tbody[1]/tr[1]/td[1]/center[1]/table[1]/tbody[1]')
 
     headword_container = html.getFirstItem('tr[1]/td[1]', main_noun_container)
     noun_data['headword']['singular'] = html.getFirstItem('b[1]/font/font', headword_container).findAll(text=True)[1]
